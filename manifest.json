@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "smo.agent-usage-2ba",
+  "name": "Agent Usage: 2BA",
+  "version": "0.1.0",
+  "author": "smo",
+  "license": "MIT",
+  "description": "2BA API key usage in Omarchy's Agents panel, using the 2ba installer key or browser pairing.",
+  "kinds": ["service"],
+  "entryPoints": { "service": "Service.qml" }
+}

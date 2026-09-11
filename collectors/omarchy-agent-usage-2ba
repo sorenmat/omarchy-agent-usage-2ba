@@ -1,0 +1,281 @@
+#!/usr/bin/python3
+# omarchy:summary=Print 2BA usage as JSON, or pair with browser login
+# omarchy:args=[--force] [--limits-only] [--login]
+# omarchy:hidden=true
+"""Read this API key's usage from Heimdall, or sign in through the browser."""
+
+import argparse
+import json
+import math
+import os
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+API_ORIGIN = "https://api.2ba.ai"
+LOGIN_ORIGIN = "https://2ba.ai"
+AUTH_HELP = "Run `omarchy-agent-usage-2ba --login` or set TWOBA_API_KEY."
+
+
+class UsageError(Exception):
+  pass
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+  def redirect_request(self, req, fp, code, msg, headers, newurl):
+    return None
+
+
+def trusted_url(url):
+  parts = urllib.parse.urlsplit(url)
+  if (parts.scheme != "https" or parts.hostname not in ("2ba.ai", "api.2ba.ai")
+      or parts.username or parts.password or parts.port not in (None, 443)):
+    raise UsageError("Refusing to send credentials outside the 2ba HTTPS endpoints")
+  return url
+
+
+def request(url, key="", body=None, pending=False):
+  trusted_url(url)
+  headers = {"Accept": "application/json"}
+  if key:
+    headers["Authorization"] = "Bearer " + key
+  if body is not None:
+    headers["Content-Type"] = "application/json"
+  req = urllib.request.Request(url, headers=headers,
+    data=None if body is None else json.dumps(body).encode())
+  try:
+    with urllib.request.build_opener(NoRedirect()).open(req, timeout=15) as response:
+      return json.load(response)
+  except urllib.error.HTTPError as error:
+    if pending and error.code == 400:
+      try:
+        if json.load(error) == {"error": "authorization_pending"}:
+          return None
+      except (ValueError, OSError):
+        pass
+      raise UsageError("Pairing expired or was denied; run --login again") from None
+    if error.code in (401, 403):
+      raise UsageError("2BA rejected the key or its permissions; " + AUTH_HELP) from None
+    if error.code == 404:
+      raise UsageError("2BA usage endpoint unavailable (HTTP 404); deploy Heimdall with GET /v1/usage") from None
+    raise UsageError(f"2BA returned HTTP {error.code}") from None
+  except (urllib.error.URLError, TimeoutError, OSError):
+    raise UsageError("Could not reach 2BA") from None
+  except ValueError:
+    raise UsageError("2BA returned invalid JSON") from None
+
+
+def key_path():
+  # Match the installer exactly; it does not use XDG_CONFIG_HOME.
+  return Path.home() / ".config/2ba/2BA_API_KEY"
+
+
+def api_key():
+  key = os.environ.get("TWOBA_API_KEY", "").strip() or os.environ.get("2BA_API_KEY", "").strip()
+  if not key:
+    try:
+      key = key_path().read_text().strip()
+    except FileNotFoundError:
+      return ""
+  if key and any(not 33 <= ord(c) <= 126 for c in key):
+    raise UsageError("Invalid 2BA API key; " + AUTH_HELP)
+  return key
+
+
+def login():
+  path = key_path()
+  path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+  # Reserve a private file before the single-use exchange consumes the key.
+  fd, temporary = tempfile.mkstemp(prefix=".2BA_API_KEY-", dir=path.parent)
+  try:
+    with os.fdopen(fd, "w") as output:
+      # Empty body selects the existing install.sh client; other client names
+      # require a server allowlist change. The browser labels the key install-*.
+      session = request(LOGIN_ORIGIN + "/api/auth/device/code", body={})
+      if not isinstance(session, dict):
+        raise UsageError("Invalid pairing response")
+      code = session.get("device_code")
+      user_code = session.get("user_code")
+      if not isinstance(code, str) or not code or not isinstance(user_code, str) or not user_code.isalnum():
+        raise UsageError("Invalid pairing response")
+      url = trusted_url(session.get("verification_url", ""))
+      parts = urllib.parse.urlsplit(url)
+      if parts.hostname != "2ba.ai" or parts.path != "/link":
+        raise UsageError("Invalid pairing verification URL")
+      expires = number(session.get("expires_in"))
+      if expires <= 0:
+        raise UsageError("Invalid pairing expiry")
+      print(f"Open {url}\nSign in and approve pairing code {user_code}.", flush=True)
+      try:
+        webbrowser.open(url)
+      except webbrowser.Error:
+        pass
+      deadline = time.monotonic() + min(expires, 600)
+      while time.monotonic() + 3 < deadline:
+        time.sleep(3)
+        result = request(LOGIN_ORIGIN + "/api/auth/device/token",
+          body={"device_code": code}, pending=True)
+        if result is None:
+          continue
+        key = result.get("api_key") if isinstance(result, dict) else None
+        if not isinstance(key, str) or not key or any(not 33 <= ord(c) <= 126 for c in key):
+          raise UsageError("Invalid pairing key response")
+        output.write(key)
+        output.flush()
+        os.fsync(output.fileno())
+        os.replace(temporary, path)
+        print(f"2BA key saved to {path} (mode 0600).")
+        return
+      raise UsageError("Pairing timed out; run --login again")
+  finally:
+    Path(temporary).unlink(missing_ok=True)
+
+
+def number(value):
+  try:
+    parsed = float(value)
+    if math.isfinite(parsed):
+      return max(0, int(parsed))
+  except (ValueError, TypeError, OverflowError):
+    pass
+  raise UsageError("2BA returned an invalid usage number")
+
+
+def base_record(**overrides):
+  record = {
+    "schemaVersion": 1, "id": "2ba", "name": "2BA",
+    "updatedAt": datetime.now(timezone.utc).isoformat(),
+    "scope": "account", "ready": False, "hasLocalStats": False,
+    "hasPromptStats": False, "tierLabel": "", "usageStatusText": "",
+    "authHelpText": "", "limits": [], "todayPrompts": 0,
+    "todaySessions": 0, "todayTotalTokens": 0, "todayTokensByModel": {},
+    "recentDays": [], "totalPrompts": 0, "totalSessions": 0,
+    "activeDays": 0, "activeDates": [], "modelUsage": {},
+  }
+  record.update(overrides)
+  return record
+
+
+def summarize(summary):
+  if (not isinstance(summary, dict) or summary.get("scope") != "api_key"
+      or summary.get("timezone") != "UTC" or "total_tokens" not in summary or "daily_stats" not in summary):
+    raise UsageError("2BA returned an invalid usage summary")
+  rows = summary["daily_stats"]
+  if rows is None:
+    rows = []  # Go marshals an empty stats slice as null.
+  if not isinstance(rows, list):
+    raise UsageError("2BA returned invalid daily stats")
+  # The endpoint explicitly returns UTC calendar days.
+  today = datetime.now(timezone.utc).date()
+  days = {}
+  for row in rows:
+    if not isinstance(row, dict):
+      raise UsageError("2BA returned an invalid daily stat")
+    try:
+      day = date.fromisoformat(row["date"]).isoformat()
+    except (KeyError, TypeError, ValueError):
+      raise UsageError("2BA returned an invalid daily date") from None
+    days[day] = days.get(day, 0) + number(row.get("tokens"))
+  recent = [(today - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
+  active = sorted(day for day, tokens in days.items() if tokens > 0)
+  record = base_record(ready=True, hasLocalStats=True,
+    todayTotalTokens=days.get(today.isoformat(), 0),
+    recentDays=[{"date": day, "messageCount": days.get(day, 0)} for day in recent],
+    activeDays=len(active), activeDates=active,
+    # The panel reserves usageStatusText for errors; any non-empty value draws
+    # a warning box and replaces the plan heading, even when ready is true.
+    usageSummaryText=f"{number(summary.get('total_requests')):,} requests, {number(summary['total_tokens']):,} tokens / 30 days (this key; UTC)")
+  if "quota" in summary:
+    apply_quota(record, summary["quota"])
+  return record
+
+
+def apply_quota(record, quota):
+  if (not isinstance(quota, dict) or quota.get("scope") != "user"
+      or quota.get("enforcement") not in ("active", "unlimited")
+      or not isinstance(quota.get("limits"), list)):
+    raise UsageError("2BA returned invalid user quota")
+  if quota["enforcement"] == "unlimited":
+    record["usageSummaryText"] += "; no user rate limit"
+    return
+  plan = quota.get("plan")
+  if not isinstance(plan, dict):
+    raise UsageError("2BA returned an invalid rate limit plan")
+  record["tierLabel"] = str(plan.get("name") or "")
+  details = []
+  for limit in quota["limits"]:
+    if not isinstance(limit, dict) or limit.get("scope") != "user":
+      raise UsageError("2BA returned an invalid quota limit")
+    metric = limit.get("metric")
+    if metric not in ("requests", "concurrent_requests"):
+      continue
+    allowed, used, remaining = (number(limit.get(field)) for field in ("limit", "used", "remaining"))
+    if allowed <= 0:
+      continue
+    if metric == "requests":
+      window = number(limit.get("window_seconds"))
+      if limit.get("window_type") != "rolling" or window <= 0:
+        raise UsageError("2BA returned an invalid rolling window")
+      duration = f"{window // 3600}h" if window % 3600 == 0 else (f"{window // 60}m" if window % 60 == 0 else f"{window}s")
+      title = f"User requests ({duration} rolling)"
+      details.append(f"{remaining:,}/{allowed:,} user requests left ({duration}, all keys)")
+      if raw := limit.get("next_release_at"):
+        try:
+          stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+          if stamp.tzinfo is None:
+            raise ValueError()
+        except (ValueError, AttributeError, TypeError):
+          raise UsageError("2BA returned an invalid quota release time") from None
+        details.append("next capacity " + stamp.astimezone(timezone.utc).strftime("%b %d %H:%M UTC"))
+    else:
+      title = "User concurrent requests"
+      details.append(f"{used}/{allowed} concurrent requests")
+    # The panel calls resetsAt a full reset. Rolling windows release individual
+    # requests, so show next_release_at in the status text instead.
+    record["limits"].append({"label": title, "title": title,
+      "percent": min(1, used / allowed), "resetsAt": ""})
+  if details:
+    record["usageSummaryText"] += "; " + "; ".join(details)
+
+
+def scan():
+  key = api_key()
+  if not key:
+    return base_record(usageStatusText="2BA unavailable", authHelpText=AUTH_HELP)
+  return summarize(request(API_ORIGIN + "/v1/usage", key))
+
+
+def main():
+  parser = argparse.ArgumentParser(description=__doc__)
+  parser.add_argument("--login", action="store_true", help="Pair in the browser and save an API key")
+  parser.add_argument("--force", action="store_true", help="Accepted for Omarchy compatibility")
+  parser.add_argument("--limits-only", action="store_true", help="Accepted for Omarchy compatibility")
+  args = parser.parse_args()
+  try:
+    if args.login:
+      login()
+      return 0
+    record = scan()
+  except (UsageError, OSError, ValueError) as error:
+    message = str(error) if isinstance(error, UsageError) else "Could not read or save 2BA credentials"
+    if args.login:
+      print(message, file=sys.stderr)
+      return 1
+    record = base_record(usageStatusText="2BA unavailable", authHelpText=message)
+  except Exception:
+    if args.login:
+      print("2BA login failed", file=sys.stderr)
+      return 1
+    record = base_record(usageStatusText="2BA unavailable", authHelpText="2BA usage scan failed")
+  print(json.dumps(record, separators=(",", ":")))
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())
