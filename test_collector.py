@@ -48,6 +48,9 @@ class CollectorTests(unittest.TestCase):
     record = collector.summarize({**summary(), "quota": quota})
     self.assertEqual(record["limits"][0]["percent"], 1)
     self.assertNotIn("next capacity", record["usageSummaryText"])
+    # Current server builds send no plan identity, only the inheritance flag.
+    stripped = {**quota, "plan": {"inherited": True}}
+    self.assertEqual(collector.summarize({**summary(), "quota": stripped})["tierLabel"], "")
     unlimited = collector.summarize({**summary(), "quota": {"scope": "user", "enforcement": "unlimited", "limits": []}})
     self.assertEqual(unlimited["limits"], [])
     self.assertEqual(unlimited["usageStatusText"], "")
@@ -69,6 +72,24 @@ class CollectorTests(unittest.TestCase):
     self.assertEqual(record["limits"], [])
     self.assertNotIn("sk-test", json.dumps(record))
     self.assertEqual(len(record["recentDays"]), 7)
+
+  def test_user_stats_widen_the_bars(self):
+    day = datetime.now(timezone.utc).date().isoformat()
+    base = summary()
+    base["user_stats"] = {"scope": "user", "total_requests": 15, "total_tokens": 1800,
+      "daily_stats": [{"date": day, "requests": 10, "tokens": 800}]}
+    record = collector.summarize(base)
+    self.assertEqual(record["todayTotalTokens"], 800)
+    self.assertEqual(record["recentDays"][-1]["messageCount"], 800)
+    self.assertEqual(record["activeDays"], 1)
+    self.assertEqual(record["activeDates"], [day])
+    # The 30-day line stays on the authenticated key.
+    self.assertIn("3 requests, 250 tokens / 30 days (this key; UTC)", record["usageSummaryText"])
+    # A non-user user_stats falls back to the key's own daily stats.
+    base["user_stats"] = {"scope": "organization", "daily_stats": []}
+    record = collector.summarize(base)
+    self.assertEqual(record["todayTotalTokens"], 250)
+    self.assertEqual(record["recentDays"][-1]["messageCount"], 250)
 
   def test_empty_and_invalid_responses(self):
     empty = {**summary(), "total_requests": 0, "total_tokens": 0, "daily_stats": []}

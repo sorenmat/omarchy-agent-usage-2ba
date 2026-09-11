@@ -8,18 +8,21 @@ It reads `https://api.2ba.ai/v1/usage` every five minutes and on shell startup,
 publishing `2ba.json` atomically under `$XDG_STATE_HOME/omarchy/agents/usage`
 (default `~/.local/state/omarchy/agents/usage`). Requires Python 3 and Omarchy.
 
-Shows today's tokens and seven daily bars. The published record also includes
-a `usageSummaryText` with request/token totals for the last 30 days. Dates are
-UTC. Usage belongs only to the authenticated API key;
-requests made with other keys, even in the same organization, are excluded.
-The tab also shows the user's effective rate limit plan, rolling-window request
-usage/remaining capacity, and concurrent request usage when capped. These quotas
-apply across all of the user's keys, including when the plan is inherited from
-the organization default. A user-specific plan overrides that default.
+Shows today's tokens and seven daily bars covering every API key of the
+authenticated user in that user's organization. Dates are UTC. The published record also includes a `usageSummaryText` with the
+request/token totals for the last 30 days of the authenticated key only;
+requests made with other keys, even in the same organization, are excluded
+from that line.
+The tab also shows rolling-window request usage/remaining capacity, and
+concurrent request usage when capped. These quotas apply across all of the
+user's keys, including when the plan is inherited from the organization
+default. A user-specific plan overrides that default. The API does not expose
+the plan's name or id — only whether it is inherited — so the tab shows the
+quota meters without a plan heading.
 
 The next capacity release and exact remaining counts are included in
 `usageSummaryText`. The current Agents panel does not render that summary; it
-shows the plan name and quota meters. Its status box is reserved for errors.
+shows the quota meters. Its status box is reserved for errors.
 The next release is not a full reset: requests leave the sliding window
 individually. Model breakdowns and session counts are not included.
 
@@ -95,11 +98,15 @@ Heimdall's generated keys are 64 hexadecimal characters; no `sk-` prefix is requ
 It requires an API key, uses the authenticated key ID from middleware, and offers
 no key/user/org selectors. On custom domains it additionally enforces the
 existing domain-to-organization match. `/api/*` and `/auth/*` remain blocked.
-It returns `Cache-Control: no-store`, a fixed rolling 30-day history, and a
-separate user-scoped `quota` snapshot from the enforcement counters. Reading
-quota does not consume capacity. An assigned plan whose state cannot be read
-returns HTTP 503; an unassigned plan reports `enforcement: "unlimited"` and no
-limits. Example:
+It returns `Cache-Control: no-store`, a fixed rolling 30-day history, a
+`user_stats` aggregate over all of the user's keys in the authenticated
+organization (same 30-day UTC shape as the key-scoped totals), and a separate
+user-scoped `quota` snapshot
+from the enforcement counters. Reading quota does not consume capacity. The
+`plan` object carries only the `inherited` flag; the plan's id and name are
+internal organization details and are not exposed to key holders. An assigned
+plan whose state cannot be read returns HTTP 503; an unassigned plan reports
+`enforcement: "unlimited"` and no limits. Example:
 
 ```json
 {
@@ -110,11 +117,17 @@ limits. Example:
   "total_requests": 2,
   "total_tokens": 1200,
   "daily_stats": [{"date": "2026-09-11", "requests": 2, "tokens": 1200}],
+  "user_stats": {
+    "scope": "user",
+    "total_requests": 30,
+    "total_tokens": 90000,
+    "daily_stats": [{"date": "2026-09-11", "requests": 3, "tokens": 1200}]
+  },
   "quota": {
     "scope": "user",
     "enforcement": "active",
     "measured_at": "2026-09-11T12:00:00Z",
-    "plan": {"id": 5, "name": "Pro", "inherited": true},
+    "plan": {"inherited": true},
     "limits": [{
       "scope": "user", "metric": "requests", "window_type": "rolling",
       "window_seconds": 18000, "limit": 4500, "used": 1200,

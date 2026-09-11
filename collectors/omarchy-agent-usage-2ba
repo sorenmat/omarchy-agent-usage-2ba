@@ -162,11 +162,7 @@ def base_record(**overrides):
   return record
 
 
-def summarize(summary):
-  if (not isinstance(summary, dict) or summary.get("scope") != "api_key"
-      or summary.get("timezone") != "UTC" or "total_tokens" not in summary or "daily_stats" not in summary):
-    raise UsageError("2BA returned an invalid usage summary")
-  rows = summary["daily_stats"]
+def day_buckets(rows):
   if rows is None:
     rows = []  # Go marshals an empty stats slice as null.
   if not isinstance(rows, list):
@@ -184,8 +180,23 @@ def summarize(summary):
     days[day] = days.get(day, 0) + number(row.get("tokens"))
   recent = [(today - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
   active = sorted(day for day, tokens in days.items() if tokens > 0)
+  return days, recent, active
+
+
+def summarize(summary):
+  if (not isinstance(summary, dict) or summary.get("scope") != "api_key"
+      or summary.get("timezone") != "UTC" or "total_tokens" not in summary or "daily_stats" not in summary):
+    raise UsageError("2BA returned an invalid usage summary")
+  # The bars follow the server's user_stats — all of the user's keys in the
+  # authenticated organization — when it provides them; older servers fall
+  # back to the key's own daily stats. The 30-day line below stays on the
+  # authenticated key.
+  user = summary.get("user_stats")
+  if not (isinstance(user, dict) and user.get("scope") == "user" and "daily_stats" in user):
+    user = summary
+  days, recent, active = day_buckets(user["daily_stats"])
   record = base_record(ready=True, hasLocalStats=True,
-    todayTotalTokens=days.get(today.isoformat(), 0),
+    todayTotalTokens=days.get(recent[-1], 0),
     recentDays=[{"date": day, "messageCount": days.get(day, 0)} for day in recent],
     activeDays=len(active), activeDates=active,
     # The panel reserves usageStatusText for errors; any non-empty value draws
