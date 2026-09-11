@@ -1,6 +1,9 @@
 # Agent Usage: 2BA
 
 An Omarchy service plugin that adds a **2BA** tab to the built-in Agents panel.
+
+![2BA usage panel showing the rolling five-hour request limit and daily token usage](docs/screenshot.png)
+
 It reads `https://api.2ba.ai/v1/usage` every five minutes and on shell startup,
 publishing `2ba.json` atomically under `$XDG_STATE_HOME/omarchy/agents/usage`
 (default `~/.local/state/omarchy/agents/usage`). Requires Python 3 and Omarchy.
