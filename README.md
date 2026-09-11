@@ -8,9 +8,8 @@ It reads `https://api.2ba.ai/v1/usage` every five minutes and on shell startup,
 publishing `2ba.json` atomically under `$XDG_STATE_HOME/omarchy/agents/usage`
 (default `~/.local/state/omarchy/agents/usage`). Requires Python 3 and Omarchy.
 
-Shows today's tokens and seven daily bars for the whole account — every API
-key of the authenticated user — matching the user-scoped quota. Dates are
-UTC. The published record also includes a `usageSummaryText` with the
+Shows today's tokens and seven daily bars covering every API key of the
+authenticated user in that user's organization. Dates are UTC. The published record also includes a `usageSummaryText` with the
 request/token totals for the last 30 days of the authenticated key only;
 requests made with other keys, even in the same organization, are excluded
 from that line.
@@ -100,8 +99,9 @@ It requires an API key, uses the authenticated key ID from middleware, and offer
 no key/user/org selectors. On custom domains it additionally enforces the
 existing domain-to-organization match. `/api/*` and `/auth/*` remain blocked.
 It returns `Cache-Control: no-store`, a fixed rolling 30-day history, a
-`user_stats` aggregate over all of the user's keys in the same 30-day UTC
-shape as the key-scoped totals, and a separate user-scoped `quota` snapshot
+`user_stats` aggregate over all of the user's keys in the authenticated
+organization (same 30-day UTC shape as the key-scoped totals), and a separate
+user-scoped `quota` snapshot
 from the enforcement counters. Reading quota does not consume capacity. The
 `plan` object carries only the `inherited` flag; the plan's id and name are
 internal organization details and are not exposed to key holders. An assigned

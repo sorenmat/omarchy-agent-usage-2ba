@@ -187,9 +187,10 @@ def summarize(summary):
   if (not isinstance(summary, dict) or summary.get("scope") != "api_key"
       or summary.get("timezone") != "UTC" or "total_tokens" not in summary or "daily_stats" not in summary):
     raise UsageError("2BA returned an invalid usage summary")
-  # The quota is user-scoped, so the bars follow the account-wide user_stats
-  # when the server provides it; older servers fall back to the key's own
-  # daily stats. The 30-day line below stays on the authenticated key.
+  # The bars follow the server's user_stats — all of the user's keys in the
+  # authenticated organization — when it provides them; older servers fall
+  # back to the key's own daily stats. The 30-day line below stays on the
+  # authenticated key.
   user = summary.get("user_stats")
   if not (isinstance(user, dict) and user.get("scope") == "user" and "daily_stats" in user):
     user = summary
